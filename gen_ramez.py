@@ -155,7 +155,8 @@ def process(fpath: str, extract_letters: bool = False, proximity: float = 1,
     )
 
     boxes_per_page = map(lambda x: x[0] + x[1], zip(images_per_page, words_per_page))
-    grouped_boxes_per_page = map(lambda words_and_images: 
+    if not extract_letters:
+        grouped_boxes_per_page = map(lambda words_and_images: 
                                  cluster_bb(words_and_images, direction, proximity),boxes_per_page)
 
     label_bboxes = lambda _bbx:  {**_bbx, **{'label': 'word' if 'text' in _bbx.keys() else 'image'}}

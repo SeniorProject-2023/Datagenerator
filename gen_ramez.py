@@ -158,6 +158,8 @@ def process(fpath: str, extract_letters: bool = False, proximity: float = 1,
     if not extract_letters:
         grouped_boxes_per_page = map(lambda words_and_images: 
                                  cluster_bb(words_and_images, direction, proximity),boxes_per_page)
+    else:
+        grouped_boxes_per_page =  boxes_per_page
 
     label_bboxes = lambda _bbx:  {**_bbx, **{'label': 'word' if 'text' in _bbx.keys() else 'image'}}
     merged_boxes_per_page = map(merge_close_boxes, grouped_boxes_per_page)

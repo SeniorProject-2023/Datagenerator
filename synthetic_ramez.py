@@ -3,8 +3,12 @@ import random
 import re
 import shutil
 import string
+from io import BytesIO
 from pathlib import Path
 
+import cv2
+
+import numpy as np
 from fontTools.ttLib import TTFont
 
 from PIL import ImageFont, Image, ImageDraw
@@ -64,12 +68,32 @@ def remove_punctuations(text):
     return text.translate(translator)
 
 
+def rotate(image, boxes, angle, resize=True):
+    h, w = image.shape[:2]
+    M = cv2.getRotationMatrix2D(center=(w // 2, h // 2), angle=angle, scale=1.0)
+    output_image = cv2.warpAffine(src=image, M=M, dsize=(w, h), flags=cv2.INTER_NEAREST)
+
+    if resize is True:
+        output_image = cv2.resize(output_image, (w, h))
+
+    boxes = [np.matmul(M, np.array([
+        [x1, x1, x2, x2],
+        [y1, y2, y2, y1],
+        [1, 1, 1, 1]
+    ])).T.reshape(8).tolist() for x1, y1, x2, y2 in boxes]
+    return output_image, boxes
+
+
 if __name__ == "__main__":
+    DEBUG = True
+    N = 5000
+
     random.seed(0)
 
     cleanup()
 
     sizes = list(range(40, 100))
+    rotations = list(range(-10, 10))
 
     padding_left_range = (10, 100)
     padding_right_range = (10, 100)
@@ -86,12 +110,13 @@ if __name__ == "__main__":
     words = list(words)
 
     images = []
-    tqd = tqdm.tqdm(total=5000)
-    while len(images) < 5000:
+    tqd = tqdm.tqdm(total=N)
+    while len(images) < N:
         tqd.update()
 
         word_not_reshaped = random.choice(words)
         size = random.choice(sizes)
+        rotation = random.choice(rotations)
         font_filename = random.choice(fonts)
         padding_left = random.randint(*padding_left_range)
         padding_right = random.randint(*padding_right_range)
@@ -121,22 +146,38 @@ if __name__ == "__main__":
         boxes = []
         for w in widths:
             box = (padding_left + offset, padding_top, padding_left + offset + w, padding_top + box[3] - box[1])
-            # draw.rectangle(box, outline="black")
             offset += w
             boxes.append(box)
 
-        # img.save(f"./output/{len(images)}.png")
+        if DEBUG:
+            img.save(f"./output/{len(images)}.png")
+
+        np_img, boxes = rotate(np.array(img) ^ 255, boxes, rotation)
+        np_img ^= 255
+        np_bytes = BytesIO()
+        np.save(np_bytes, np_img)
         images.append({
-            "image": (img.mode, img.size, img.tobytes()),
+            "image": np_bytes.getvalue(),
             "boxes": boxes,
             "ground_truth": word_not_reshaped
         })
 
+        if DEBUG:
+            img = Image.fromarray(np_img)
+            draw = ImageDraw.Draw(img)
+            for box in boxes:
+                draw.line((box[0], box[1], box[2], box[3]), fill="black")
+                draw.line((box[2], box[3], box[4], box[5]), fill="black")
+                draw.line((box[4], box[5], box[6], box[7]), fill="black")
+                draw.line((box[6], box[7], box[0], box[1]), fill="black")
+            img.save(f"./output/{len(images) - 1}_rotated.png")
+
     with open("./output/data.pickle", "wb") as f:
         pickle.dump(images, f)
 
-    # with open("./output/data.pickle", "rb") as f:
-    #     images = pickle.load(f)
-    #     Image.frombytes(*images[0]["image"]).save("./output/testtttttttttt.png")
-    #     print(images[0]["boxes"])
-    #     print(images[0]["ground_truth"][0])
+    with open("./output/data.pickle", "rb") as f:
+        images = pickle.load(f)
+        boxes = images[0]["boxes"]
+        load_bytes = BytesIO(images[0]["image"])
+        loaded_np = np.load(load_bytes, allow_pickle=True)
+        Image.fromarray(loaded_np).save("./output/test_pickle.png")

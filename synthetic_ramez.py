@@ -87,10 +87,9 @@ def rotate(image, boxes, angle, resize=True):
 if __name__ == "__main__":
     DEBUG = True
     N = 5000
+    cleanup()
 
     random.seed(0)
-
-    cleanup()
 
     sizes = list(range(40, 100))
     rotations = list(range(-10, 10))
@@ -177,7 +176,6 @@ if __name__ == "__main__":
 
     with open("./output/data.pickle", "rb") as f:
         images = pickle.load(f)
-        boxes = images[0]["boxes"]
-        load_bytes = BytesIO(images[0]["image"])
-        loaded_np = np.load(load_bytes, allow_pickle=True)
-        Image.fromarray(loaded_np).save("./output/test_pickle.png")
+        for i in range(len(images)):
+            images[i]["image"] = np.load(BytesIO(images[i]["image"]), allow_pickle=True)
+        Image.fromarray(images[0]["image"]).save("./output/test_pickle.png")

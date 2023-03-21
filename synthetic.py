@@ -70,8 +70,7 @@ def GetNumberOfWords(lineKind):
 
 FONTFILES = ["~/Downloads/alfont_com_AlFont_com_29LTMakina-Regular.otf"]
 NumberOfPages = 10
-generator = ArabicWordGenerator(
-    r"/home/astroc/Projects/C#/ImageGenerator/ImageGenerator/ar_reviews_100k.txt")
+generator = ArabicWordGenerator(r"/home/astroc/Projects/C#/ImageGenerator/ImageGenerator/ar_reviews_100k.txt")
 
 
 
@@ -106,7 +105,6 @@ for font in FONTFILES:
             image.paste(imageToAdd,(xDestination2, yDestination2))
             imageRects.append(Rectangle(xDestination1, yDestination1, imageToAdd.width, imageToAdd.height))
             imageRects.append(Rectangle(xDestination2, yDestination2, imageToAdd.width, imageToAdd.height))
-
 
         currentY = 0
         for lineIndex in range(40):

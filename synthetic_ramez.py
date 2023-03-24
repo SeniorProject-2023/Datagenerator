@@ -6,14 +6,15 @@ import string
 from io import BytesIO
 from pathlib import Path
 
-import cv2
-
-import numpy as np
-from fontTools.ttLib import TTFont
-
-from PIL import ImageFont, Image, ImageDraw
 import arabic_reshaper
+import cv2
+import numpy as np
 import tqdm
+from PIL import ImageFont, Image, ImageDraw
+from fontTools.ttLib import TTFont
+from skimage.util import random_noise
+
+from probe_relighting.generate_images import generate_relighted_image
 
 '''
 split whole lines into a single word per line (requires moreutils)
@@ -84,11 +85,28 @@ def rotate(image, boxes, angle, resize=True):
     return output_image, boxes
 
 
+def perspective(image, box, boxes, radius, rand_seed):
+    r = random.Random(rand_seed)
+    x0, x1, y0, y1 = box
+    box = [[x0, x1], [x0, y1], [x1, y1], [x1, y0]]
+    new_box = [[x + r.randint(-radius, radius), y + r.randint(-radius, radius)] for x, y in box]
+    src_points = np.float32(box)
+    dst_points = np.float32(new_box)
+    M = cv2.getPerspectiveTransform(src_points, dst_points)
+    boxes = [np.matmul(M, np.array([
+        [x1, x2, x3, x4],
+        [y1, y2, y3, y4],
+        [1, 1, 1, 1]
+    ]))[:2, :].T.reshape(8).tolist() for x1, y1, x2, y2, x3, y3, x4, y4 in boxes]
+    img = cv2.warpPerspective(image, M, image.shape[::-1])
+    return img, boxes, new_box
+
+
 if __name__ == "__main__":
     OUT_DIR = Path("./output")
-    DEBUG = False
+    DEBUG = True
     REBUILD = True
-    N = 5000
+    N = 10
     TRAIN = 0.7
     VAL = 0.2
     TEST = 0.1
@@ -99,11 +117,13 @@ if __name__ == "__main__":
 
     sizes = list(range(40, 100))
     rotations = list(range(-10, 10))
+    lighting_seed = random.random()
+    perspective_seed = random.random()
 
-    padding_left_range = (10, 100)
-    padding_right_range = (10, 100)
-    padding_top_range = (10, 100)
-    padding_bot_range = (10, 100)
+    padding_left_range = (10, 30)
+    padding_right_range = (10, 30)
+    padding_top_range = (10, 30)
+    padding_bot_range = (10, 30)
 
     fonts = open("fonts.txt").read().splitlines()
     fonts = filter(lambda file: file.endswith(".ttf"), fonts)
@@ -144,7 +164,6 @@ if __name__ == "__main__":
                 if any([ord(c) not in ttf.getBestCmap() for c in word]):
                     continue
                 widths = [ttf.getGlyphSet().hMetrics[ttf.getBestCmap()[ord(c)]][0] for c in word]
-            sum_ = sum(widths)
             widths = [w * (box[2] - box[0]) / sum(widths) for w in widths][::-1]
 
             img = Image.new("L", (width, height), "white")
@@ -162,6 +181,13 @@ if __name__ == "__main__":
                 img.save(f"./output/{len(images)}.png")
 
             np_img, boxes = rotate(np.array(img) ^ 255, boxes, rotation)
+            # np_img, boxes, box = perspective(np_img, box, boxes, 4, perspective_seed)
+            np_img = random_noise(np_img, mode='s&p', amount=0.3)
+            np_img = np.array(255 * np_img, dtype='uint8')
+            img = Image.fromarray(np_img)
+            img = generate_relighted_image(img, lighting_seed)
+
+            np_img = np.array(img)
             np_img ^= 255
             np_bytes = BytesIO()
             np.save(np_bytes, np_img)
@@ -193,18 +219,18 @@ if __name__ == "__main__":
         image_dir_name = "images"
         label_dir_name = "labels"
 
-        for dir in [train_dir, val_dir, test_dir]:
-            dir.mkdir(exist_ok=False)
-            dir.joinpath(label_dir_name).mkdir(exist_ok=False)
-            dir.joinpath(image_dir_name).mkdir(exist_ok=False)
+        for d in [train_dir, val_dir, test_dir]:
+            d.mkdir()
+            d.joinpath(label_dir_name).mkdir()
+            d.joinpath(image_dir_name).mkdir()
 
         for i, img_dict in enumerate(images):
             if i / N < TRAIN:
-                dir = train_dir
+                dir_ = train_dir
             elif i / N < TRAIN + VAL:
-                dir = val_dir
+                dir_ = val_dir
             else:
-                dir = test_dir
+                dir_ = test_dir
 
             img = np.load(BytesIO(img_dict["image"]), allow_pickle=True)
             boxes = img_dict["boxes"]
@@ -212,26 +238,20 @@ if __name__ == "__main__":
 
             # normalization
             for box in boxes:
-                box[0] /= img.shape[1]
-                box[2] /= img.shape[1]
-                box[4] /= img.shape[1]
-                box[6] /= img.shape[1]
-
-                box[1] /= img.shape[0]
-                box[3] /= img.shape[0]
-                box[5] /= img.shape[0]
-                box[7] /= img.shape[0]
+                for k in range(len(box)):
+                    box[k] /= img.shape[(k + 1) % 2]
 
             filename = f"{i}"
-            Image.fromarray(img).save(dir.joinpath(image_dir_name, filename + ".png"))
-            boxes_str = [f"{letter_to_class[c]} {box[0]} {box[1]} {box[2]} {box[3]} {box[4]} {box[5]} {box[6]} {box[7]}\n"
+            Image.fromarray(img).save(dir_.joinpath(image_dir_name, filename + ".png"))
+            boxes_str = [
+                f"{letter_to_class[c]} {box[0]} {box[1]} {box[2]} {box[3]} {box[4]} {box[5]} {box[6]} {box[7]}\n"
                 for box, c in zip(boxes, label[::-1])]
-            with open(dir.joinpath(label_dir_name, filename + ".txt"), "w") as f:
+            with open(dir_.joinpath(label_dir_name, filename + ".txt"), "w") as f:
                 f.writelines(boxes_str)
 
         output_str = "names:\n"
         for l in unique_letters:
-            output_str += f"  - {ord(l)}\n"
+            output_str += f"  - {l}\n"
         output_str += f"nc: {len(unique_letters)}\n"
 
         with open("./output/data.yaml", "w") as f:

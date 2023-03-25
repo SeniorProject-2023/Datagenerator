@@ -197,7 +197,7 @@ def main():
     OUT_DIR = Path("./output")
     DEBUG = False
     REBUILD = True
-    N = 10
+    N = 20000
     TRAIN = 0.7
     VAL = 0.2
     TEST = 0.1

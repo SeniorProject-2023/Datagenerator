@@ -151,6 +151,9 @@ def tmp(args):
     if DEBUG:
         img.save(f"./output/{i}.png")
 
+    # quality reduction
+    img = img.resize((img.size[0] // 3, img.size[1] // 3)).resize(img.size)
+
     np_img, boxes = rotate(np.array(img) ^ 255, boxes, rotation)
     # TODO
     x1 = boxes[0][0]
@@ -166,7 +169,7 @@ def tmp(args):
         0] or y3 >= np_img.shape[0] or y4 >= np_img.shape[0]:
         return None
     np_img, boxes = perspective(np_img, boxes, 4, perspective_seed)
-    np_img = random_noise(np_img, mode='s&p', amount=0.3)
+    np_img = random_noise(np_img, mode='s&p', amount=0.005)
     np_img = 255 * np_img
     img = Image.fromarray(np_img)
     img = generate_relighted_image(img, lighting_seed)
@@ -209,10 +212,10 @@ def main():
     sizes = list(range(40, 100))
     rotations = list(range(-10, 10))
 
-    padding_left_range = (10, 30)
-    padding_right_range = (10, 30)
-    padding_top_range = (10, 30)
-    padding_bot_range = (10, 30)
+    padding_left_range = (10, 10)
+    padding_right_range = (10, 10)
+    padding_top_range = (10, 10)
+    padding_bot_range = (10, 10)
 
     fonts = open("fonts.txt").read().splitlines()
     fonts = filter(lambda file: file.endswith(".ttf"), fonts)
@@ -244,6 +247,7 @@ def main():
 
     with open("./output/data.pickle", "rb") as f:
         images = pickle.load(f)
+        N = len(images)
 
         train_dir = OUT_DIR.joinpath("train")
         val_dir = OUT_DIR.joinpath("val")
@@ -256,7 +260,7 @@ def main():
             d.joinpath(label_dir_name).mkdir()
             d.joinpath(image_dir_name).mkdir()
 
-        for i, img_dict in enumerate(images):
+        for i, img_dict in tqdm.tqdm(enumerate(images)):
             if i / N < TRAIN:
                 dir_ = train_dir
             elif i / N < TRAIN + VAL:

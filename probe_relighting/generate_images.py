@@ -8,7 +8,7 @@ from probe_relighting.utils.preprocessing import image_tr
 args = {
     "mode": "synthetic",
     "step": 20,
-    "intensity": 5
+    "intensity": 25
 }
 
 # Loading model with weights

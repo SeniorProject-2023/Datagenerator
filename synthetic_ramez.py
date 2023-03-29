@@ -1,4 +1,4 @@
-import os
+import math
 import pickle
 import random
 import shutil
@@ -12,7 +12,6 @@ import tqdm
 from PIL import ImageFont, Image, ImageDraw
 from fontTools.ttLib import TTFont
 from skimage.util import random_noise
-from torch import multiprocessing
 
 from probe_relighting.generate_images import generate_relighted_image
 from punctuation import remove_punctuations, remove_diacritics
@@ -35,81 +34,85 @@ def cleanup(out_dir):
     out_dir.mkdir(exist_ok=True)
 
 
-def rotate(image, boxes, angle, resize=True):
+def transform_box(boxes, M):
+    boxes = map(lambda box: np.array(box).reshape(-1, 2).T, boxes)
+    boxes = map(lambda box: np.vstack((box, np.ones(box.shape[1]))), boxes)
+    boxes = map(lambda box: M @ box, boxes)
+    boxes = map(lambda box: box.T.reshape(-1).tolist(), boxes)
+    boxes = list(boxes)
+    return boxes
+
+
+def rotate(image, boxes, angleInDegrees):
     h, w = image.shape[:2]
-    M = cv2.getRotationMatrix2D(center=(w // 2, h // 2), angle=angle, scale=1.0)
-    output_image = cv2.warpAffine(src=image, M=M, dsize=(w, h), flags=cv2.INTER_NEAREST)
+    img_c = (w / 2, h / 2)
 
-    if resize is True:
-        output_image = cv2.resize(output_image, (w, h))
+    rot = cv2.getRotationMatrix2D(img_c, angleInDegrees, 1)
 
-    boxes = [np.matmul(M, np.array([
-        [x1, x1, x2, x2],
-        [y1, y2, y2, y1],
-        [1, 1, 1, 1]
-    ])).T.reshape(8).tolist() for x1, y1, x2, y2 in boxes]
-    return output_image, boxes
+    rad = math.radians(angleInDegrees)
+    sin = math.sin(rad)
+    cos = math.cos(rad)
+    b_w = math.ceil((h * abs(sin)) + (w * abs(cos))) + 1
+    b_h = math.ceil((h * abs(cos)) + (w * abs(sin))) + 1
+
+    rot[0, 2] += ((b_w / 2) - img_c[0])
+    rot[1, 2] += ((b_h / 2) - img_c[1])
+
+    outImg = cv2.warpAffine(image, rot, (b_w, b_h))
+    boxes = transform_box(boxes, rot)
+    return outImg, boxes
 
 
-def perspective(image, boxes, radius, rand_seed):
+def random_perspective(image, boxes, radius, rand_seed):
     r = random.Random(rand_seed)
 
-    old_boxes = boxes
-
-    x1 = boxes[0][0]
-    y1 = boxes[0][1]
-    x2 = boxes[0][2]
-    y2 = boxes[0][3]
-    x3 = boxes[-1][-4]
-    y3 = boxes[-1][-3]
-    x4 = boxes[-1][-2]
-    y4 = boxes[-1][-1]
-    top = np.min([y1, y2, y3, y4])
-    bot = np.max([y1, y2, y3, y4])
-    left = np.min([x1, x2, x3, x4])
-    right = np.max([x1, x2, x3, x4])
-    padding_top = top
-    padding_bot = image.shape[0] - bot
-    padding_left = left
-    padding_right = image.shape[1] - right
-
+    x1, y1, x2, y2 = boxes[0][:4]
+    x3, y3, x4, y4 = boxes[-1][-4:]
     box = [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
     new_box = [[x + r.randint(-radius, radius), y + r.randint(-radius, radius)] for x, y in box]
     src_points = np.float32(box)
     dst_points = np.float32(new_box)
     M = cv2.getPerspectiveTransform(src_points, dst_points)
-    boxes = [cv2.perspectiveTransform(np.array(box).reshape((-1, 1, 2)), M).reshape(8).tolist() for box in boxes]
+    boxes_ = [cv2.perspectiveTransform(np.array(box).reshape((-1, 1, 2)), M).reshape(8).tolist() for box in boxes]
 
-    x1 = boxes[0][0]
-    y1 = boxes[0][1]
-    x2 = boxes[0][2]
-    y2 = boxes[0][3]
-    x3 = boxes[-1][-4]
-    y3 = boxes[-1][-3]
-    x4 = boxes[-1][-2]
-    y4 = boxes[-1][-1]
+    x1, y1, x2, y2 = boxes_[0][:4]
+    x3, y3, x4, y4 = boxes_[-1][-4:]
     top = np.min([y1, y2, y3, y4])
     bot = np.max([y1, y2, y3, y4])
     left = np.min([x1, x2, x3, x4])
     right = np.max([x1, x2, x3, x4])
-    padding_top = np.max([padding_top, top])
-    padding_bot = np.max([padding_bot, image.shape[0] - bot])
-    padding_left = np.max([padding_left, left])
-    padding_right = np.max([padding_right, image.shape[1] - right])
-    shape = (bot - top + padding_top + padding_bot, right - left + padding_left + padding_right)
+    shape = (bot - top + 2, right - left + 2)
 
-    # TODO
-    if x1 < 0 or x2 < 0 or x3 < 0 or x4 < 0 or y1 < 0 or y2 < 0 or y3 < 0 or y4 < 0 or x1 >= image.shape[1] or x2 >= \
-            image.shape[1] or x3 >= image.shape[1] or x4 >= image.shape[1] or y1 >= image.shape[0] or y2 >= image.shape[0] or y3 >= image.shape[0] or y4 >= image.shape[0]:
-        return image, old_boxes
+    trans = np.array([
+        [1, 0, -left + 1],
+        [0, 1, -top + 1],
+        [0, 0, 1]
+    ])
 
-    img = cv2.warpPerspective(image, M, np.int32(np.ceil(shape[::-1])))
+    img = cv2.warpPerspective(image, trans @ M, np.int32(np.ceil(shape[::-1])))
+    boxes = [cv2.perspectiveTransform(np.array(box).reshape((-1, 1, 2)), trans @ M).reshape(8).tolist() for box in
+             boxes]
+
     return img, boxes
 
 
-def tmp(args):
-    DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range, padding_top_range, padding_bot_range = args
+def pad(img, boxes, padding_left, padding_right, padding_top, padding_bot):
+    trans = np.float32([
+        [1, 0, padding_left],
+        [0, 1, padding_top],
+    ])
 
+    new_height, new_width  = img.shape
+    new_height += padding_top + padding_bot
+    new_width += padding_right + padding_left
+    img = cv2.warpAffine(img, trans, (new_width, new_height))
+    boxes = transform_box(boxes, trans)
+
+    return img, boxes
+
+
+def generate_image(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range, padding_top_range,
+                   padding_bot_range, perspective_radius, quality_coefficient_range, noise_amount_range):
     word_not_reshaped = random.choice(words)
     size = random.choice(sizes)
     rotation = random.choice(rotations)
@@ -118,6 +121,8 @@ def tmp(args):
     padding_right = random.randint(*padding_right_range)
     padding_top = random.randint(*padding_top_range)
     padding_bot = random.randint(*padding_bot_range)
+    quality_coefficient = random.randint(*quality_coefficient_range)
+    noise_amount = random.uniform(*noise_amount_range)
 
     perspective_seed = random.random()
     lighting_seed = random.random()
@@ -126,15 +131,15 @@ def tmp(args):
     font = ImageFont.truetype(font_filename, size)
     word_box = font.getbbox(word)
 
-    width = word_box[2] - word_box[0] + padding_left + padding_right
-    height = word_box[3] - word_box[1] + padding_top + padding_bot
-    x1, y1 = (-word_box[0] + padding_left, -word_box[1] + padding_top)
+    width = word_box[2] - word_box[0]
+    height = word_box[3] - word_box[1]
+    x1, y1 = (-word_box[0], -word_box[1])
 
     with TTFont(font_filename, 0, ignoreDecompileErrors=True) as ttf:
         if any([ord(c) not in ttf.getBestCmap() for c in word]):
             return None
         widths = [ttf.getGlyphSet().hMetrics[ttf.getBestCmap()[ord(c)]][0] for c in word]
-    widths = [w * (word_box[2] - word_box[0]) / sum(widths) for w in widths][::-1]
+    widths = [w * width / sum(widths) for w in widths][::-1]
 
     img = Image.new("L", (width, height), "white")
     draw = ImageDraw.Draw(img)
@@ -143,39 +148,30 @@ def tmp(args):
     offset = 0
     boxes = []
     for w in widths:
-        word_box = (
-            padding_left + offset, padding_top, padding_left + offset + w, padding_top + word_box[3] - word_box[1])
+        x1, y1, x2, y2 = (offset, 0, offset + w, height)
+        x1, y1, x2, y2, x3, y3, x4, y4 = x1, y1, x1, y2, x2, y2, x2, y1  # 2 points to 4 points
         offset += w
-        boxes.append(word_box)
+        boxes.append((x1, y1, x2, y2, x3, y3, x4, y4))
 
     if DEBUG:
         img.save(f"./output/{i}.png")
 
     # quality reduction
-    img = img.resize((img.size[0] // 3, img.size[1] // 3)).resize(img.size)
-
-    np_img, boxes = rotate(np.array(img) ^ 255, boxes, rotation)
-    # TODO
-    x1 = boxes[0][0]
-    y1 = boxes[0][1]
-    x2 = boxes[0][2]
-    y2 = boxes[0][3]
-    x3 = boxes[-1][-4]
-    y3 = boxes[-1][-3]
-    x4 = boxes[-1][-2]
-    y4 = boxes[-1][-1]
-    if x1 < 0 or x2 < 0 or x3 < 0 or x4 < 0 or y1 < 0 or y2 < 0 or y3 < 0 or y4 < 0 or x1 >= np_img.shape[1] or x2 >= \
-            np_img.shape[1] or x3 >= np_img.shape[1] or x4 >= np_img.shape[1] or y1 >= np_img.shape[0] or y2 >= np_img.shape[
-        0] or y3 >= np_img.shape[0] or y4 >= np_img.shape[0]:
-        return None
-    np_img, boxes = perspective(np_img, boxes, 4, perspective_seed)
-    np_img = random_noise(np_img, mode='s&p', amount=0.005)
-    np_img = 255 * np_img
-    img = Image.fromarray(np_img)
-    img = generate_relighted_image(img, lighting_seed)
+    img = img.resize((img.size[0] // 3, img.size[1] // quality_coefficient)).resize(img.size)
 
     np_img = np.array(img)
     np_img ^= 255
+    np_img, boxes = rotate(np_img, boxes, rotation)
+    np_img, boxes = random_perspective(np_img, boxes, perspective_radius, perspective_seed)
+    np_img, boxes = pad(np_img, boxes, padding_left, padding_right, padding_top, padding_bot)
+    np_img = random_noise(np_img, mode='s&p', amount=noise_amount)
+    np_img = np.uint8(255 * (np_img / np_img.max()))
+    np_img ^= 255
+
+    img = Image.fromarray(np_img)
+    img = generate_relighted_image(img, lighting_seed)
+    np_img = np.array(img)
+
     np_bytes = BytesIO()
     np.save(np_bytes, np_img)
 
@@ -196,56 +192,8 @@ def tmp(args):
     }
 
 
-def main():
-    OUT_DIR = Path("./output")
-    DEBUG = False
-    REBUILD = True
-    N = 20000
-    TRAIN = 0.7
-    VAL = 0.2
-    TEST = 0.1
-    random.seed(0)
-
-    if REBUILD:
-        cleanup(OUT_DIR)
-
-    sizes = list(range(40, 100))
-    rotations = list(range(-10, 10))
-
-    padding_left_range = (10, 10)
-    padding_right_range = (10, 10)
-    padding_top_range = (10, 10)
-    padding_bot_range = (10, 10)
-
-    fonts = open("fonts.txt").read().splitlines()
-    fonts = filter(lambda file: file.endswith(".ttf"), fonts)
-    fonts = list(fonts)
-
-    words = open("words.txt").read().split()
-    words = map(remove_punctuations, words)
-    words = map(remove_diacritics, words)
-    words = list(words)
-
-    unique_letters = list(set("".join(words))) + ['ﻼ', 'ﻻ']
-    letter_to_class = {letter: i for i, letter in enumerate(unique_letters)}
-
-    if REBUILD:
-        images = []
-
-        with multiprocessing.Pool(os.cpu_count()) as pool:
-            iter = [(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
-                     padding_top_range, padding_bot_range) for i in range(N)]
-            tqd = tqdm.tqdm(total=N)
-            images = []
-            for image in map(tmp, iter):
-                images.append(image)
-                tqd.update(1)
-            images = list(filter(lambda x: x is not None, images))
-
-        with open("./output/data.pickle", "wb") as f:
-            pickle.dump(images, f)
-
-    with open("./output/data.pickle", "rb") as f:
+def pickle_to_yolo(pickle_path, unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL):
+    with open(pickle_path, "rb") as f:
         images = pickle.load(f)
         N = len(images)
 
@@ -300,6 +248,56 @@ def main():
 
         with open("./output/data.yaml", "w") as f:
             f.write(output_str)
+
+
+def main():
+    OUT_DIR = Path("./output")
+    FONTS_PATH = Path("fonts.txt")
+    WORDS_PATH = Path("words.txt")
+    DEBUG = False
+    REBUILD = True
+    N = 20000
+    TRAIN = 0.7
+    VAL = 0.2
+    TEST = 0.1
+    random.seed(0)
+
+    if REBUILD:
+        cleanup(OUT_DIR)
+
+    sizes = list(range(40, 100))
+    rotations = list(range(-10, 10))
+    perspective_radius = 4
+
+    padding_left_range = (0, 4)
+    padding_right_range = (0, 4)
+    padding_top_range = (0, 4)
+    padding_bot_range = (0, 4)
+
+    quality_coefficient_range = (1, 4)
+    noise_amount_range = (0, 0.01)
+
+    fonts = open(FONTS_PATH).read().splitlines()
+    fonts = filter(lambda file: file.endswith(".ttf"), fonts)
+    fonts = list(fonts)
+
+    words = open(WORDS_PATH).read().split()
+    words = map(remove_punctuations, words)
+    words = map(remove_diacritics, words)
+    words = list(words)
+
+    unique_letters = list(set("".join(words))) + ['ﻼ', 'ﻻ']
+    letter_to_class = {letter: i for i, letter in enumerate(unique_letters)}
+
+    if REBUILD:
+        images = [generate_image(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
+                                 padding_top_range, padding_bot_range, perspective_radius, quality_coefficient_range, noise_amount_range) for i in tqdm.tqdm(range(N))]
+        images = list(filter(lambda x: x is not None, images))
+
+        with open(OUT_DIR / "data.pickle", "wb") as f:
+            pickle.dump(images, f)
+
+    pickle_to_yolo(OUT_DIR / "data.pickle", unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL)
 
 
 if __name__ == "__main__":

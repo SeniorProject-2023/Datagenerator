@@ -12,7 +12,7 @@ def load_image(img_path: str):
     return frame
 
 
-word_model = YOLO("/content/drive/MyDrive/best.pt")
+word_model = YOLO("./word_model.pt")
 def infer_words(img: np.ndarray):
     global word_model
     # returns (word_image, bb, class)

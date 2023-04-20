@@ -17,15 +17,17 @@ import enum
 import pdfplumber
 import tqdm as tqdm
 
+import sys
+import random
 
-IGNORE_SET:str = string.punctuation+"*':،.؛!؟."
+IGNORE_SET: str = string.punctuation+"*':،.؛!؟."
 classes = ['image', 'word']
 
 
-
 class ClusteringDirection(enum.Enum):
-    Veritical  = 1
+    Veritical = 1
     Horizontal = 2
+
 
 def cluster_bb(bb: List[Dict[str, Union[float, str]]],
                direction: ClusteringDirection,
@@ -66,7 +68,6 @@ class VerticalClusteringKey(object):
         return self.flag[0]
 
 
-
 def merge_bb(a, b):
     res = {}
     res['x0'] = min(a['x0'], b['x0'])
@@ -75,7 +76,6 @@ def merge_bb(a, b):
     res['bottom'] = max(a['bottom'], b['bottom'])
     res['text'] = a['text'] + b['text']
     return res
-
 
 
 def distance(p, q):
@@ -109,8 +109,12 @@ def id_generator():
 
 def to_coco(bbx):
     global classes
+
     poly = resample_polygon(
-        list(product([bbx['x0'], bbx['x1']], [bbx['top'], bbx['bottom']])), 10)
+        [[bbx['x0'], bbx['top']],
+         [bbx['x1'], bbx['top']],
+         [bbx['x1'], bbx['bottom']],
+         [bbx['x0'], bbx['bottom']]], 10)
     poly = [p for x in poly for p in x]
     return {
         "category_id": classes.index(bbx['label']),
@@ -141,9 +145,13 @@ def merge_close_boxes(grouped: List[List[Dict[str, Union[float, str]]]]) -> List
     return merged
 
 
-def process(fpath: str, extract_letters: bool = False, 
+generated_id = 0
+
+
+def process(fpath: str, extract_letters: bool = False,
             proximity: float = 1,
             direction: ClusteringDirection = ClusteringDirection.Horizontal) -> None:
+    global generated_id
     pdf = pdfplumber.open(fpath)
     pages = pdf.pages[7:]
 
@@ -155,27 +163,50 @@ def process(fpath: str, extract_letters: bool = False,
         pages
     )
 
-    boxes_per_page = map(lambda x: x[0] + x[1], zip(images_per_page, words_per_page))
-    grouped_boxes_per_page = map(lambda words_and_images: 
-                                 cluster_bb(words_and_images, direction, proximity),boxes_per_page)
+    boxes_per_page = map(lambda x: x[0] + x[1],
+                         zip(images_per_page, words_per_page))
+    grouped_boxes_per_page = map(lambda words_and_images:
+                                 cluster_bb(words_and_images, direction, proximity), boxes_per_page)
 
-    label_bboxes = lambda _bbx:  {**_bbx, **{'label': 'word' if 'text' in _bbx.keys() else 'image'}}
+    def label_bboxes(_bbx): return {
+        **_bbx, **{'label': 'word' if 'text' in _bbx.keys() else 'image'}}
     merged_boxes_per_page = map(merge_close_boxes, grouped_boxes_per_page)
 
-    dataset = []
+    images = []
+    annotations = []
     for i, page, bboxes_per_page in tqdm.tqdm(zip(range(len(pages)), pages, merged_boxes_per_page)):
-        fname  = fpath.split("/")[-1].split(".")[0]
+        fname = fpath.split("/")[-1].split(".")[0]
         fname = f"./{fname}/{i}.png"
-        record = {}
-        record["file_name"] = fname
-        record["height"] = page.height
-        record["width"] = page.width
         labeled_boxes = map(label_bboxes, bboxes_per_page)
         converted = map(to_coco, labeled_boxes)
-        record["annotations"] = list(converted)
-        page.to_image().save(fname)
-        dataset.append(record)
-    return dataset
+        converted = list(converted)
+        for c in converted:
+            c["image_id"] = generated_id
+        annotations.extend(converted)
+        pdf_image = page.to_image()
+        pdf_image.save(fname)
+        images.append({
+            "id": generated_id,
+            "width": pdf_image.original.width,
+            "height": pdf_image.original.height,
+            "file_name": fname,
+        })
+        generated_id += 1
+    dataset_json = {
+        "categories": [{
+            "supercategory": "label",
+            "id": 0,
+            "name": "image"
+        }, {
+            "supercategory": "label",
+            "id": 1,
+            "name": "word"
+        }
+        ],
+        "images": images,
+        "annotations": annotations
+    }
+    return dataset_json
 
 
 def cleanup():
@@ -185,5 +216,9 @@ def cleanup():
 
 
 if __name__ == "__main__":
+    original_stdout = sys.stdout
     cleanup()
-    process("/home/astroc/Projects/Python/AraGen/books/book4.pdf")
+    with open('book4.json', 'w') as f:
+        sys.stdout = f
+        print(process("/home/astroc/Projects/Python/Graduation/SegmentationGeneration/book.pdf"))
+        sys.stdout = original_stdout

@@ -49,7 +49,8 @@ name_to_unicode = {
     'taa-marpota': 1577,
     'alef-': 1575,
     'lam-alef': 65276,
-    'lam-alef-la': 65275
+    'lam-alef-la': 65275,
+    'space': ord(" "),
 }
 
 

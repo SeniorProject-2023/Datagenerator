@@ -1,7 +1,9 @@
+import argparse
 import math
 import pickle
 import random
 import shutil
+import sys
 from io import BytesIO
 from pathlib import Path
 
@@ -102,7 +104,7 @@ def pad(img, boxes, padding_left, padding_right, padding_top, padding_bot):
         [0, 1, padding_top],
     ])
 
-    new_height, new_width  = img.shape
+    new_height, new_width = img.shape
     new_height += padding_top + padding_bot
     new_width += padding_right + padding_left
     img = cv2.warpAffine(img, trans, (new_width, new_height))
@@ -111,9 +113,12 @@ def pad(img, boxes, padding_left, padding_right, padding_top, padding_bot):
     return img, boxes
 
 
-def generate_image(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range, padding_top_range,
-                   padding_bot_range, perspective_radius, quality_coefficient_range, noise_amount_range):
-    word_not_reshaped = random.choice(words)
+def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
+                             padding_top_range,
+                             padding_bot_range, perspective_radius, quality_coefficient_range, noise_amount_range,
+                             sentence_len_range, no_mod_probability):
+    sentence_len = random.choice(sentence_len_range)
+    word_not_reshaped = " ".join([random.choice(words) for _ in range(sentence_len)])
     size = random.choice(sizes)
     rotation = random.choice(rotations)
     font_filename = random.choice(fonts)
@@ -137,7 +142,10 @@ def generate_image(DEBUG, i, words, sizes, rotations, fonts, padding_left_range,
 
     with TTFont(font_filename, 0, ignoreDecompileErrors=True) as ttf:
         if any([ord(c) not in ttf.getBestCmap() for c in word]):
-            return None
+            return generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_left_range,
+                                            padding_right_range, padding_top_range,
+                                            padding_bot_range, perspective_radius, quality_coefficient_range,
+                                            noise_amount_range, sentence_len_range, no_mod_probability)
         widths = [ttf.getGlyphSet().hMetrics[ttf.getBestCmap()[ord(c)]][0] for c in word]
     widths = [w * width / sum(widths) for w in widths][::-1]
 
@@ -156,20 +164,28 @@ def generate_image(DEBUG, i, words, sizes, rotations, fonts, padding_left_range,
     if DEBUG:
         img.save(f"./output/{i}.png")
 
-    # quality reduction
-    img = img.resize((img.size[0] // 3, img.size[1] // quality_coefficient)).resize(img.size)
+    if np.random.choice([True, False], 1, p=[1 - no_mod_probability, no_mod_probability]):
+        # quality reduction
+        img = img.resize((img.size[0] // 3, img.size[1] // quality_coefficient)).resize(img.size)
 
-    np_img = np.array(img)
-    np_img ^= 255
-    np_img, boxes = rotate(np_img, boxes, rotation)
-    np_img, boxes = random_perspective(np_img, boxes, perspective_radius, perspective_seed)
-    np_img, boxes = pad(np_img, boxes, padding_left, padding_right, padding_top, padding_bot)
-    np_img = random_noise(np_img, mode='s&p', amount=noise_amount)
-    np_img = np.uint8(255 * (np_img / np_img.max()))
-    np_img ^= 255
+        np_img = np.array(img)
+        np_img ^= 255
+        np_img, boxes = rotate(np_img, boxes, rotation)
+        np_img, boxes = random_perspective(np_img, boxes, perspective_radius, perspective_seed)
+        np_img, boxes = pad(np_img, boxes, padding_left, padding_right, padding_top, padding_bot)
+        np_img = random_noise(np_img, mode='s&p', amount=noise_amount)
+        np_img = np.uint8(255 * (np_img / np_img.max()))
+        np_img ^= 255
 
-    img = Image.fromarray(np_img)
-    img = generate_relighted_image(img, lighting_seed)
+        img = Image.fromarray(np_img)
+        img = generate_relighted_image(img, lighting_seed)
+    else:
+        np_img = np.array(img)
+        np_img ^= 255
+        np_img, boxes = rotate(np_img, boxes, 0) # identity transformation just to reshape boxes
+        np_img ^= 255
+        img = Image.fromarray(np_img)
+
     np_img = np.array(img)
 
     np_bytes = BytesIO()
@@ -254,19 +270,33 @@ def main():
     OUT_DIR = Path("./output")
     FONTS_PATH = Path("fonts.txt")
     WORDS_PATH = Path("words.txt")
-    DEBUG = False
-    REBUILD = True
-    N = 20000
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--rebuild", action="store_true", default=True)
+    parser.add_argument("--count", default=10, type=int)
+    parser.add_argument("--start", default=0, type=int)
+    parser.add_argument("--sentence_max_length", default=0, type=int)
+    args = parser.parse_args()
+
+    DEBUG = args.debug
+    REBUILD = args.rebuild
+    N = args.count
+    START = args.start
+    SENT_LEN = args.sentence_max_length
     TRAIN = 0.7
     VAL = 0.2
     TEST = 0.1
-    random.seed(0)
 
     if REBUILD:
         cleanup(OUT_DIR)
 
+    sentence_len_range = range(1, SENT_LEN + 1)
+
+    no_mod_probability = 0.25
+
     sizes = list(range(40, 100))
-    rotations = list(range(-10, 10))
+    rotations = list(range(-2, 2))
     perspective_radius = 4
 
     padding_left_range = (0, 4)
@@ -286,12 +316,15 @@ def main():
     words = map(remove_diacritics, words)
     words = list(words)
 
-    unique_letters = list(set("".join(words))) + ['ﻼ', 'ﻻ']
+    unique_letters = list(set("".join(words + ['ﻼ', 'ﻻ' + ' '])))
     letter_to_class = {letter: i for i, letter in enumerate(unique_letters)}
 
     if REBUILD:
-        images = [generate_image(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
-                                 padding_top_range, padding_bot_range, perspective_radius, quality_coefficient_range, noise_amount_range) for i in tqdm.tqdm(range(N))]
+        images = [
+            generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
+                                     padding_top_range, padding_bot_range, perspective_radius,
+                                     quality_coefficient_range, noise_amount_range, sentence_len_range,
+                                     no_mod_probability) for i in tqdm.tqdm(range(START, START + N))]
         images = list(filter(lambda x: x is not None, images))
 
         with open(OUT_DIR / "data.pickle", "wb") as f:

@@ -1,8 +1,14 @@
+import os
+import re
+from pathlib import Path
+
 import cv2
 import numpy as np
+from PIL import Image
 from more_itertools import split_when
 from ultralytics import YOLO
 from ultralytics.yolo.utils.plotting import Annotator
+from datasets import load_metric
 
 word_model = YOLO("./word_model.pt")
 letter_model = YOLO("./letter_model.pt")
@@ -120,34 +126,56 @@ def groupbyrow(boxes):
     return list(split_when(sorted_boxes, not_vertically_overlapping))
 
 
+def evaluate_yolo_model(test_dir, model):
+    test_dir = Path(test_dir)
+    assert test_dir.exists()
+    assert "images" in os.listdir(test_dir)
+    assert "labels" in os.listdir(test_dir)
+
+    predicted_texts = []
+    ground_truths = []
+    for filename in os.listdir(Path(test_dir) / "images"):
+        match = re.search("(.+)-\d+.png", filename)
+        if not match:
+            continue
+        else:
+            ground_truths.append(match.group(1))
+            img = cv2.cvtColor(cv2.imread(str(Path(test_dir) / "images/" / filename)), cv2.COLOR_BGR2RGB)
+            predicted_texts.append(infer_letters(img))
+
+    cer_metric = load_metric("cer")
+    return cer_metric.compute(predictions=predicted_texts, references=ground_truths)
+
 if __name__ == '__main__':
-    # img_path = "./cropped2.jpg"
-    img_path = "/home/ramez/IMG-20230321-WA0017.jpg"
+    print(evaluate_yolo_model("/home/ramez/PycharmProjects/Datagenerator/output/train", word_model))
 
-    img = load_image(img_path)
-    word_boxes = infer_words(img)
-
-
-    def box_to_key(box, thresh):
-        x1, y1, x2, y2 = box[1].xyxy[0].tolist()
-        return y1, -x2
-
-
-    word_boxes = groupbyrow(word_boxes)
-    word_boxes = [i for sublist in word_boxes for i in
-                  sorted(sublist, key=lambda b: b[1].xyxy[0].tolist()[2], reverse=True)]
-    # word_boxes = sorted(word_boxes, key=lambda box: box_to_key(box))
-
-    word_imgs = [x[0] for x in word_boxes]
-    word_imgs = [preprocess_box(img) for img in word_imgs]
-    word_texts = [infer_letters(x) for x in word_imgs]
-    print(" ".join(word_texts))
-
-    # image = cv2.cvtColor(cv2.imread("/home/ramez/PycharmProjects/Datagenerator/cropped2.jpg"), cv2.COLOR_BGR2RGB)
-    # image = cv2.cvtColor(cv2.imread("/home/ramez/IMG-20230321-WA0017.jpg"), cv2.COLOR_BGR2RGB)
-    # res = infer_words(image.copy())
-    # annotator = Annotator(image, line_width=1)
-    # for i, r in enumerate(res):
-    #     annotator.box_label(r[1].xyxy[0].cpu(), str(i))
-    # frame = annotator.result()
-    # cv2.imwrite("lmao.png", frame)
+# if __name__ == '__main__':
+#     img_path = "./cropped2.jpg"
+#     # img_path = "/home/ramez/IMG-20230321-WA0017.jpg"
+#
+#     img = load_image(img_path)
+#     word_boxes = infer_words(img)[3:4]
+#
+#
+#     def box_to_key(box, thresh):
+#         x1, y1, x2, y2 = box[1].xyxy[0].tolist()
+#         return y1, -x2
+#
+#
+#     word_boxes = groupbyrow(word_boxes)
+#     word_boxes = [i for sublist in word_boxes for i in
+#                   sorted(sublist, key=lambda b: b[1].xyxy[0].tolist()[2], reverse=True)]
+#
+#     word_imgs = [x[0] for x in word_boxes]
+#     word_imgs = [preprocess_box(img) for img in word_imgs]
+#     word_texts = [infer_letters(x) for x in word_imgs]
+#     print(" ".join(word_texts))
+#
+#     # image = cv2.cvtColor(cv2.imread("/home/ramez/PycharmProjects/Datagenerator/cropped2.jpg"), cv2.COLOR_BGR2RGB)
+#     # image = cv2.cvtColor(cv2.imread("/home/ramez/IMG-20230321-WA0017.jpg"), cv2.COLOR_BGR2RGB)
+#     # res = infer_words(image.copy())
+#     # annotator = Annotator(image, line_width=1)
+#     # for i, r in enumerate(res):
+#     #     annotator.box_label(r[1].xyxy[0].cpu(), str(i))
+#     # frame = annotator.result()
+#     # cv2.imwrite("lmao.png", frame)

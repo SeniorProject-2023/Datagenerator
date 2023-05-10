@@ -117,9 +117,8 @@ def pad(img, boxes, padding_left, padding_right, padding_top, padding_bot):
 def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
                              padding_top_range,
                              padding_bot_range, perspective_radius, quality_coefficient_range, noise_amount_range,
-                             sentence_len_range, no_mod_probability):
-    sentence_len = random.choice(sentence_len_range)
-    word_not_reshaped = " ".join([random.choice(words) for _ in range(sentence_len)])
+                             no_mod_probability):
+    word_not_reshaped = random.choice(words)
     size = random.choice(sizes)
     rotation = random.choice(rotations)
     font_filename = random.choice(fonts)
@@ -146,7 +145,7 @@ def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_l
             return generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_left_range,
                                             padding_right_range, padding_top_range,
                                             padding_bot_range, perspective_radius, quality_coefficient_range,
-                                            noise_amount_range, sentence_len_range, no_mod_probability)
+                                            noise_amount_range, no_mod_probability)
         widths = [ttf.getGlyphSet().hMetrics[ttf.getBestCmap()[ord(c)]][0] for c in word]
     widths = [w * width / sum(widths) for w in widths][::-1]
 
@@ -277,22 +276,18 @@ def main():
     parser.add_argument("--rebuild", action="store_true", default=True)
     parser.add_argument("--count", default=10, type=int)
     parser.add_argument("--start", default=0, type=int)
-    parser.add_argument("--sentence_max_length", default=0, type=int)
     args = parser.parse_args()
 
     DEBUG = args.debug
     REBUILD = args.rebuild
     N = args.count
     START = args.start
-    SENT_LEN = args.sentence_max_length
     TRAIN = 0.7
     VAL = 0.2
     TEST = 0.1
 
     if REBUILD:
         cleanup(OUT_DIR)
-
-    sentence_len_range = range(1, SENT_LEN + 1)
 
     no_mod_probability = 0.25
 
@@ -317,14 +312,14 @@ def main():
     words = map(remove_diacritics, words)
     words = list(words)
 
-    unique_letters = list(OrderedDict.fromkeys("".join(words + ['ﻼ', 'ﻻ' + ' '])).keys())
+    unique_letters = list(OrderedDict.fromkeys("".join(words + ['ﻼ', 'ﻻ'])).keys())
     letter_to_class = {letter: i for i, letter in enumerate(unique_letters)}
 
     if REBUILD:
         images = [
             generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
                                      padding_top_range, padding_bot_range, perspective_radius,
-                                     quality_coefficient_range, noise_amount_range, sentence_len_range,
+                                     quality_coefficient_range, noise_amount_range,
                                      no_mod_probability) for i in tqdm.tqdm(range(START, START + N))]
         images = list(filter(lambda x: x is not None, images))
 

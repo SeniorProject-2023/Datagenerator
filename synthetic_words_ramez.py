@@ -4,6 +4,7 @@ import pickle
 import random
 import shutil
 import sys
+from collections import OrderedDict
 from io import BytesIO
 from pathlib import Path
 
@@ -316,7 +317,7 @@ def main():
     words = map(remove_diacritics, words)
     words = list(words)
 
-    unique_letters = list(set("".join(words + ['ﻼ', 'ﻻ' + ' '])))
+    unique_letters = list(OrderedDict.fromkeys("".join(words + ['ﻼ', 'ﻻ' + ' '])).keys())
     letter_to_class = {letter: i for i, letter in enumerate(unique_letters)}
 
     if REBUILD:

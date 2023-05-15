@@ -113,6 +113,17 @@ def pad(img, boxes, padding_left, padding_right, padding_top, padding_bot):
 
     return img, boxes
 
+def resize(img, boxes, width, height):
+    trans = np.float32([
+        [width / img.shape[1], 0, 0],
+        [0, height / img.shape[0], 0],
+    ])
+
+    img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+    boxes = transform_box(boxes, trans)
+
+    return img, boxes
+
 
 def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_left_range, padding_right_range,
                              padding_top_range,
@@ -249,10 +260,25 @@ def pickle_to_yolo(pickle_path, unique_letters, letter_to_class, OUT_DIR, TRAIN,
                 for k in range(len(word_box)):
                     word_box[k] /= img.shape[(k + 1) % 2]
 
+            # add more points inbetween
+            for iter in range(2):
+                new_boxes = []
+                for word_box in boxes:
+                    new_box = []
+                    for even_idx in range(0, len(word_box), 2):
+                        new_box.append(word_box[even_idx % len(word_box)])
+                        new_box.append(word_box[(even_idx + 1) % len(word_box)])
+                        new_box.append((word_box[even_idx % len(word_box)] + word_box[(even_idx + 2) % len(word_box)]) / 2)
+                        new_box.append((word_box[(even_idx + 1) % len(word_box)] + word_box[(even_idx + 3) % len(word_box)]) / 2)
+                    new_boxes.append(new_box)
+                boxes = new_boxes
+
+
             filename = f"{label}-{i}"
             Image.fromarray(img).save(dir_.joinpath(image_dir_name, filename + ".png"))
+            box_to_string = lambda b: " ".join([str(b[i]) for i in range(len(b))])
             boxes_str = [
-                f"{letter_to_class[c]} {box[0]} {box[1]} {box[2]} {box[3]} {box[4]} {box[5]} {box[6]} {box[7]}\n"
+                f"{letter_to_class[c]} {box_to_string(box)}\n"
                 for box, c in zip(boxes, label[::-1])]
             with open(dir_.joinpath(label_dir_name, filename + ".txt"), "w") as f:
                 f.writelines(boxes_str)
@@ -300,7 +326,7 @@ def main():
     padding_top_range = (0, 4)
     padding_bot_range = (0, 4)
 
-    quality_coefficient_range = (1, 4)
+    quality_coefficient_range = (3, 4)
     noise_amount_range = (0, 0.01)
 
     fonts = open(FONTS_PATH).read().splitlines()

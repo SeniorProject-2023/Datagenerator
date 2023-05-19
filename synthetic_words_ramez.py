@@ -46,13 +46,31 @@ def transform_box(boxes, M):
     return boxes
 
 
-def rotate(image, boxes, angleInDegrees):
+def tighten_boxes(img, boxes):
+    out = []
+    for box in boxes:
+        cpy = np.copy(img)
+        contour_mask = np.zeros_like(cpy)
+        contour_mask = cv2.fillPoly(contour_mask, [np.array(box).reshape(-1, 2).astype("int32")], 255)
+        # mask = cv2.bitwise_not(contour_mask)
+        result = cv2.bitwise_and(cpy, cpy, mask=contour_mask)
+        contours, _ = cv2.findContours(result, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        merged_contour = np.vstack(contours)
+        merged_contour = np.squeeze(merged_contour)
+        hull = cv2.convexHull(merged_contour)
+        hull = np.squeeze(hull)
+        out.append(hull.reshape(-1).tolist())
+
+    return out
+
+
+def rotate(image, boxes, angle_in_degrees):
     h, w = image.shape[:2]
     img_c = (w / 2, h / 2)
 
-    rot = cv2.getRotationMatrix2D(img_c, angleInDegrees, 1)
+    rot = cv2.getRotationMatrix2D(img_c, angle_in_degrees, 1)
 
-    rad = math.radians(angleInDegrees)
+    rad = math.radians(angle_in_degrees)
     sin = math.sin(rad)
     cos = math.cos(rad)
     b_w = math.ceil((h * abs(sin)) + (w * abs(cos))) + 1
@@ -69,21 +87,24 @@ def rotate(image, boxes, angleInDegrees):
 def random_perspective(image, boxes, radius, rand_seed):
     r = random.Random(rand_seed)
 
-    x1, y1, x2, y2 = boxes[0][:4]
-    x3, y3, x4, y4 = boxes[-1][-4:]
+    h, w = image.shape[:2]
+
+    x1, y1, x2, y2 = h * 0.2, w * 0.2, h * 0.8, w * 0.2
+    x3, y3, x4, y4 = h * 0.8, w * 0.8, h * 0.2, w * 0.8
     box = [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
     new_box = [[x + r.randint(-radius, radius), y + r.randint(-radius, radius)] for x, y in box]
     src_points = np.float32(box)
     dst_points = np.float32(new_box)
     M = cv2.getPerspectiveTransform(src_points, dst_points)
-    boxes_ = [cv2.perspectiveTransform(np.array(box).reshape((-1, 1, 2)), M).reshape(8).tolist() for box in boxes]
+    boxes_ = [cv2.perspectiveTransform(np.array(box).reshape((-1, 1, 2)), M).reshape(-1).tolist() for box in boxes]
 
-    x1, y1, x2, y2 = boxes_[0][:4]
-    x3, y3, x4, y4 = boxes_[-1][-4:]
-    top = np.min([y1, y2, y3, y4])
-    bot = np.max([y1, y2, y3, y4])
-    left = np.min([x1, x2, x3, x4])
-    right = np.max([x1, x2, x3, x4])
+    boxes_ = np.array([j for sub in boxes_ for j in sub])
+    xs = boxes_[::2]
+    ys = boxes_[1::2]
+    top = np.min(ys)
+    bot = np.max(ys)
+    left = np.min(xs)
+    right = np.max(xs)
     shape = (bot - top + 2, right - left + 2)
 
     trans = np.array([
@@ -93,7 +114,7 @@ def random_perspective(image, boxes, radius, rand_seed):
     ])
 
     img = cv2.warpPerspective(image, trans @ M, np.int32(np.ceil(shape[::-1])))
-    boxes = [cv2.perspectiveTransform(np.array(box).reshape((-1, 1, 2)), trans @ M).reshape(8).tolist() for box in
+    boxes = [cv2.perspectiveTransform(np.array(box).reshape((-1, 1, 2)), trans @ M).reshape(-1).tolist() for box in
              boxes]
 
     return img, boxes
@@ -112,6 +133,7 @@ def pad(img, boxes, padding_left, padding_right, padding_top, padding_bot):
     boxes = transform_box(boxes, trans)
 
     return img, boxes
+
 
 def resize(img, boxes, width, height):
     trans = np.float32([
@@ -170,34 +192,38 @@ def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_l
         x1, y1, x2, y2 = (offset, 0, offset + w, height)
         x1, y1, x2, y2, x3, y3, x4, y4 = x1, y1, x1, y2, x2, y2, x2, y1  # 2 points to 4 points
         offset += w
-        boxes.append((x1, y1, x2, y2, x3, y3, x4, y4))
+        boxes.append([x1, y1, x2, y2, x3, y3, x4, y4])
 
     if DEBUG:
         img.save(f"./output/{i}.png")
 
+    np_img = np.array(img)
+    np_img ^= 255
+    boxes = tighten_boxes(np_img, boxes)
+    np_img ^= 255
     if np.random.choice([True, False], 1, p=[1 - no_mod_probability, no_mod_probability]):
         # quality reduction
-        img = img.resize((img.size[0] // 3, img.size[1] // quality_coefficient)).resize(img.size)
+        # img = img.resize((img.size[0] // 3, img.size[1] // quality_coefficient)).resize(img.size)
 
-        np_img = np.array(img)
+        np_img = cv2.GaussianBlur(np_img, (3, 3), 0)
+        _, np_img = cv2.threshold(np_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         np_img ^= 255
         np_img, boxes = rotate(np_img, boxes, rotation)
+        np_img, boxes = resize(np_img, boxes, 128 // 2, 96 // 2)
         np_img, boxes = random_perspective(np_img, boxes, perspective_radius, perspective_seed)
         np_img, boxes = pad(np_img, boxes, padding_left, padding_right, padding_top, padding_bot)
         np_img = random_noise(np_img, mode='s&p', amount=noise_amount)
         np_img = np.uint8(255 * (np_img / np_img.max()))
         np_img ^= 255
 
+        # np_img = cv2.GaussianBlur(np_img, (3, 3), 0)
+        _, np_img = cv2.threshold(np_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
         img = Image.fromarray(np_img)
         img = generate_relighted_image(img, lighting_seed)
-    else:
         np_img = np.array(img)
-        np_img ^= 255
-        np_img, boxes = rotate(np_img, boxes, 0) # identity transformation just to reshape boxes
-        np_img ^= 255
-        img = Image.fromarray(np_img)
 
-    np_img = np.array(img)
+    np_img, boxes = resize(np_img, boxes, 128, 96)
 
     np_bytes = BytesIO()
     np.save(np_bytes, np_img)
@@ -206,10 +232,10 @@ def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_l
         img = Image.fromarray(np_img)
         draw = ImageDraw.Draw(img)
         for word_box in boxes:
-            draw.line((word_box[0], word_box[1], word_box[2], word_box[3]), fill="black")
-            draw.line((word_box[2], word_box[3], word_box[4], word_box[5]), fill="black")
-            draw.line((word_box[4], word_box[5], word_box[6], word_box[7]), fill="black")
-            draw.line((word_box[6], word_box[7], word_box[0], word_box[1]), fill="black")
+            for even_idx in range(0, len(word_box), 2):
+                draw.line((word_box[even_idx % len(word_box)], word_box[(even_idx + 1) % len(word_box)],
+                           word_box[(even_idx + 2) % len(word_box)], word_box[(even_idx + 3) % len(word_box)]),
+                          fill="black")
         img.save(f"./output/{i}_rotated.png")
 
     return {
@@ -268,11 +294,12 @@ def pickle_to_yolo(pickle_path, unique_letters, letter_to_class, OUT_DIR, TRAIN,
                     for even_idx in range(0, len(word_box), 2):
                         new_box.append(word_box[even_idx % len(word_box)])
                         new_box.append(word_box[(even_idx + 1) % len(word_box)])
-                        new_box.append((word_box[even_idx % len(word_box)] + word_box[(even_idx + 2) % len(word_box)]) / 2)
-                        new_box.append((word_box[(even_idx + 1) % len(word_box)] + word_box[(even_idx + 3) % len(word_box)]) / 2)
+                        new_box.append(
+                            (word_box[even_idx % len(word_box)] + word_box[(even_idx + 2) % len(word_box)]) / 2)
+                        new_box.append(
+                            (word_box[(even_idx + 1) % len(word_box)] + word_box[(even_idx + 3) % len(word_box)]) / 2)
                     new_boxes.append(new_box)
                 boxes = new_boxes
-
 
             filename = f"{label}-{i}"
             Image.fromarray(img).save(dir_.joinpath(image_dir_name, filename + ".png"))

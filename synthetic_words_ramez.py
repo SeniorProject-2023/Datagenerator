@@ -46,7 +46,7 @@ def transform_box(boxes, M):
     return boxes
 
 
-def tighten_boxes(img, boxes):
+def tighten_boxes(img, boxes, hull_scale=None):
     out = []
     for box in boxes:
         cpy = np.copy(img)
@@ -58,7 +58,28 @@ def tighten_boxes(img, boxes):
         merged_contour = np.vstack(contours)
         merged_contour = np.squeeze(merged_contour)
         hull = cv2.convexHull(merged_contour)
-        hull = np.squeeze(hull)
+        if hull_scale is not None:
+            M = cv2.moments(hull)
+            cx = int(M['m10'] / M['m00'])
+            cy = int(M['m01'] / M['m00'])
+            scaled_hull = np.empty_like(hull)
+            for i in range(len(hull)):
+                x = hull[i][0][0]
+                y = hull[i][0][1]
+                dx = x - cx
+                dy = y - cy
+                dist = np.sqrt(dx * dx + dy * dy)
+                new_x = int(x + dx / dist * dist * (hull_scale - 1))
+                new_y = int(y + dy / dist * dist * (hull_scale - 1))
+                scaled_hull[i][0][0] = new_x
+                scaled_hull[i][0][1] = new_y
+            scaled_hull = np.squeeze(scaled_hull)
+            xs = scaled_hull[:, 0]
+            ys = scaled_hull[:, 1]
+            # clip xs and ys to image bounds
+            xs = np.clip(xs, 0, img.shape[1] - 1)
+            ys = np.clip(ys, 0, img.shape[0] - 1)
+            hull = np.array(list(zip(xs, ys)))
         out.append(hull.reshape(-1).tolist())
 
     return out
@@ -212,7 +233,7 @@ def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_l
         np_img, boxes = resize(np_img, boxes, 128 // 2, 96 // 2)
         np_img, boxes = random_perspective(np_img, boxes, perspective_radius, perspective_seed)
         np_img, boxes = pad(np_img, boxes, padding_left, padding_right, padding_top, padding_bot)
-        np_img = random_noise(np_img, mode='s&p', amount=noise_amount)
+        # np_img = random_noise(np_img, mode='s&p', amount=noise_amount)
         np_img = np.uint8(255 * (np_img / np_img.max()))
         np_img ^= 255
 
@@ -220,7 +241,7 @@ def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_l
         _, np_img = cv2.threshold(np_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         img = Image.fromarray(np_img)
-        img = generate_relighted_image(img, lighting_seed)
+        # img = generate_relighted_image(img, lighting_seed)
         np_img = np.array(img)
 
     np_img, boxes = resize(np_img, boxes, 128, 96)
@@ -245,7 +266,7 @@ def generate_image_sentences(DEBUG, i, words, sizes, rotations, fonts, padding_l
     }
 
 
-def pickle_to_yolo(pickle_path, unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL):
+def pickle_to_yolo_seg(pickle_path, unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL):
     with open(pickle_path, "rb") as f:
         images = pickle.load(f)
         N = len(images)
@@ -300,6 +321,78 @@ def pickle_to_yolo(pickle_path, unique_letters, letter_to_class, OUT_DIR, TRAIN,
                             (word_box[(even_idx + 1) % len(word_box)] + word_box[(even_idx + 3) % len(word_box)]) / 2)
                     new_boxes.append(new_box)
                 boxes = new_boxes
+
+            filename = f"{label}-{i}"
+            Image.fromarray(img).save(dir_.joinpath(image_dir_name, filename + ".png"))
+            box_to_string = lambda b: " ".join([str(b[i]) for i in range(len(b))])
+            boxes_str = [
+                f"{letter_to_class[c]} {box_to_string(box)}\n"
+                for box, c in zip(boxes, label[::-1])]
+            with open(dir_.joinpath(label_dir_name, filename + ".txt"), "w") as f:
+                f.writelines(boxes_str)
+
+        output_str = "names:\n"
+        for l in unique_letters:
+            output_str += f"  - {l}\n"
+        output_str += f"nc: {len(unique_letters)}\n"
+
+        with open("./output/data.yaml", "w") as f:
+            f.write(output_str)
+
+
+def pickle_to_yolo_det(pickle_path, unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL):
+    with open(pickle_path, "rb") as f:
+        images = pickle.load(f)
+        N = len(images)
+
+        train_dir = OUT_DIR.joinpath("train")
+        val_dir = OUT_DIR.joinpath("val")
+        test_dir = OUT_DIR.joinpath("test")
+        image_dir_name = "images"
+        label_dir_name = "labels"
+
+        for d in [train_dir, val_dir, test_dir]:
+            d.mkdir()
+            d.joinpath(label_dir_name).mkdir()
+            d.joinpath(image_dir_name).mkdir()
+
+        for i, img_dict in tqdm.tqdm(enumerate(images)):
+            if i / N < TRAIN:
+                dir_ = train_dir
+            elif i / N < TRAIN + VAL:
+                dir_ = val_dir
+            else:
+                dir_ = test_dir
+
+            img = np.load(BytesIO(img_dict["image"]), allow_pickle=True)
+            boxes = img_dict["boxes"]
+            label = img_dict["ground_truth"]
+            reshaped_label = arabic_reshaper.reshape(label)
+
+            lam_alef_indices = [i for i, ltr in enumerate(reshaped_label) if ltr == 'ﻼ' or ltr == 'ﻻ']
+            for idx in lam_alef_indices:
+                label = label[:idx] + reshaped_label[idx] + label[idx + 2:]
+
+            if len(label) != len(reshaped_label):
+                continue
+
+            normalized_boxes = []
+            for word_box in boxes:
+                xs = word_box[::2]
+                ys = word_box[1::2]
+                top = np.min(ys)
+                bot = np.max(ys)
+                left = np.min(xs)
+                right = np.max(xs)
+                word_box = [(left + right) / 2, (top + bot) / 2, right - left, bot - top]
+                # normalization
+                word_box[0] = word_box[0] / img.shape[1]
+                word_box[1] = word_box[1] / img.shape[0]
+                word_box[2] = word_box[2] / img.shape[1]
+                word_box[3] = word_box[3] / img.shape[0]
+
+                normalized_boxes.append(word_box)
+            boxes = normalized_boxes
 
             filename = f"{label}-{i}"
             Image.fromarray(img).save(dir_.joinpath(image_dir_name, filename + ".png"))
@@ -379,7 +472,8 @@ def main():
         with open(OUT_DIR / "data.pickle", "wb") as f:
             pickle.dump(images, f)
 
-    pickle_to_yolo(OUT_DIR / "data.pickle", unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL)
+    # pickle_to_yolo_seg(OUT_DIR / "data.pickle", unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL)
+    pickle_to_yolo_det(OUT_DIR / "data.pickle", unique_letters, letter_to_class, OUT_DIR, TRAIN, VAL)
 
 
 if __name__ == "__main__":

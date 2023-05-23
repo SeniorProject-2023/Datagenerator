@@ -1,4 +1,5 @@
 import argparse
+import glob
 import math
 import pickle
 import random
@@ -414,7 +415,7 @@ def pickle_to_yolo_det(pickle_path, unique_letters, letter_to_class, OUT_DIR, TR
 
 def main():
     OUT_DIR = Path("./output")
-    FONTS_PATH = Path("fonts.txt")
+    FONTS_PATH = Path("fonts")
     WORDS_PATH = Path("words.txt")
 
     parser = argparse.ArgumentParser()
@@ -428,8 +429,8 @@ def main():
     REBUILD = args.rebuild
     N = args.count
     START = args.start
-    TRAIN = 0.7
-    VAL = 0.2
+    TRAIN = 0.8
+    VAL = 0.1
     TEST = 0.1
 
     if REBUILD:
@@ -449,7 +450,7 @@ def main():
     quality_coefficient_range = (3, 4)
     noise_amount_range = (0, 0.01)
 
-    fonts = open(FONTS_PATH).read().splitlines()
+    fonts = [filepath for filepath in glob.glob(str(FONTS_PATH) + '/**/*', recursive=True)]
     fonts = filter(lambda file: file.endswith(".ttf"), fonts)
     fonts = list(fonts)
 
